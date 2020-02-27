@@ -1,0 +1,240 @@
+﻿#define NUM_THREADS_1D 16
+#define NUM_THREADS_2D 16
+#define NUM_THREADS_3D 8
+
+#pragma kernel DivergenceInit
+#pragma kernel PressureDivergence
+#pragma kernel PressureGradient
+#pragma kernel Blur
+#pragma kernel Advection
+#pragma kernel WriteFluidTexture
+
+float _Time;
+float2 _FluidGlobalVelocity;
+
+float _AffectorRadius;
+float2 _AffectorPosition;
+
+struct FluidParticle
+{
+	float2 velocity;
+	float pressure;
+	float energy;
+};
+
+int _FluidBufferSizeX;
+int _FluidBufferSizeY;
+int _FluidBufferSizeZ;
+
+RWStructuredBuffer<FluidParticle> _DivergenceBuffer;
+RWStructuredBuffer<FluidParticle> _GradientBuffer;
+RWStructuredBuffer<FluidParticle> _BlurBuffer;
+RWStructuredBuffer<FluidParticle> _AdvectionBuffer;
+
+RWTexture2D<float4> _FluidTexture;
+
+/*************************
+FUNCTIONS
+**************************/
+
+uint GetBufferIndexFromCoordinates2D(uint2 coord) {
+
+	coord = min(coord, uint2(_FluidBufferSizeX, _FluidBufferSizeY));
+	coord = max(coord, uint2(0, 0));
+	return coord.x + _FluidBufferSizeX * coord.y;
+}
+
+FluidParticle SampleFluidBuffer2D(RWStructuredBuffer<FluidParticle> buffer, uint2 coord) {
+
+	return buffer[GetBufferIndexFromCoordinates2D(coord)];
+}
+
+FluidParticle SampleFluidBuffer2DBilinear(RWStructuredBuffer<FluidParticle> buffer, float2 coord) {
+
+	coord.x = min(max(coord.x, 0), _FluidBufferSizeX - 1);
+	coord.y = min(max(coord.y, 0), _FluidBufferSizeY - 1);
+
+	int x = coord.x;
+	int y = coord.y;
+
+	int XY = _FluidBufferSizeX * _FluidBufferSizeY;
+
+	float fx = coord.x - x;
+	float fy = coord.y - y;
+
+	int xp1 = min(_FluidBufferSizeX - 1, x + 1);
+	int yp1 = min(_FluidBufferSizeY - 1, y + 1);
+
+	FluidParticle p0 = SampleFluidBuffer2D(buffer, uint2(x, y));
+	FluidParticle p1 = SampleFluidBuffer2D(buffer, uint2(xp1, y));
+	FluidParticle p2 = SampleFluidBuffer2D(buffer, uint2(x, yp1));
+	FluidParticle p3 = SampleFluidBuffer2D(buffer, uint2(xp1, yp1));
+
+	FluidParticle x0, x1, result;
+
+	x0.velocity = p0.velocity * (1.0f - fx) + p1.velocity * fx;
+	x0.pressure = p0.pressure * (1.0f - fx) + p1.pressure * fx;
+	x0.energy = p0.energy * (1.0f - fx) + p1.energy * fx;
+
+	x1.velocity = p2.velocity * (1.0f - fx) + p3.velocity * fx;
+	x1.pressure = p2.pressure * (1.0f - fx) + p3.pressure * fx;
+	x1.energy = p2.energy * (1.0f - fx) + p3.energy * fx;
+
+	result.velocity = x0.velocity * (1.0f - fy) + x1.velocity * fy;
+	result.pressure = x0.pressure * (1.0f - fy) + x1.pressure * fy;
+	result.energy = x0.energy * (1.0f - fy) + x1.energy * fy;
+
+	return result;
+}
+
+//uint GetBufferIndexFromCoordinates3D(uint3 coord) {
+//
+//	return coord.x + _FluidBufferSizeX * coord.y + _FluidBufferSizeX * _FluidBufferSizeY * coord.z;
+//}
+
+//FluidParticle SampleFluidBuffer3D(RWStructuredBuffer<FluidParticle> buffer, uint3 coord) {
+//
+//	return buffer[GetBufferIndexFromCoordinates3D(coord)];
+//}
+
+/*************************
+KERNELS
+**************************/
+
+[numthreads(NUM_THREADS_2D, NUM_THREADS_2D, 1)]
+void DivergenceInit(uint3 id : SV_DispatchThreadID)
+{
+	uint idx = GetBufferIndexFromCoordinates2D(id.xy);
+
+	_DivergenceBuffer[idx].velocity = _FluidGlobalVelocity;
+	_DivergenceBuffer[idx].pressure = 0.0f;
+	_DivergenceBuffer[idx].energy = 0.0f;
+}
+
+[numthreads(NUM_THREADS_2D, NUM_THREADS_2D, 1)]
+void PressureDivergence(uint3 id : SV_DispatchThreadID)
+{
+	uint idx = GetBufferIndexFromCoordinates2D(id.xy);
+
+	//Current fluid particle
+	FluidParticle Q = SampleFluidBuffer2D(_AdvectionBuffer, id.xy);
+
+	//Neighborhood
+	FluidParticle n = SampleFluidBuffer2D(_AdvectionBuffer, id.xy + uint2(0, 1));
+	FluidParticle e = SampleFluidBuffer2D(_AdvectionBuffer, id.xy + uint2(1, 0));
+	FluidParticle s = SampleFluidBuffer2D(_AdvectionBuffer, id.xy - uint2(0, 1));
+	FluidParticle w = SampleFluidBuffer2D(_AdvectionBuffer, id.xy - uint2(1, 0));
+
+	//Update pressure from neighborhood velocities
+	Q.pressure -= 0.25f * (n.velocity.y - s.velocity.y + e.velocity.x - w.velocity.x);
+
+	//Update energy
+	Q.energy -= 0.125f * (n.velocity.y * n.energy - s.velocity.y * s.energy + e.velocity.x * e.energy - w.velocity.x * w.energy);
+
+	if (_AffectorPosition.x >= 0 && _AffectorPosition.y >= 0) {
+		float distanceToAffector = length(float2((float)id.x / (float)_FluidBufferSizeX, (float)id.y / (float)_FluidBufferSizeY) - _AffectorPosition);
+
+		if (distanceToAffector < _AffectorRadius) {
+			Q.velocity = float2(sin(_Time), cos(_Time));
+			Q.energy = -1;
+		}
+	}
+
+	//Boundary conditions
+	if (id.x < 2 || id.x > (uint)_FluidBufferSizeX - 2 || id.y < 2 || id.y >(uint)_FluidBufferSizeY - 2) {
+		Q.velocity = _FluidGlobalVelocity;
+		Q.energy = 0.0f;
+	}
+
+	//Write result
+	_DivergenceBuffer[idx] = Q;
+}
+
+[numthreads(NUM_THREADS_2D, NUM_THREADS_2D, 1)]
+void PressureGradient(uint3 id : SV_DispatchThreadID)
+{
+	uint idx = GetBufferIndexFromCoordinates2D(id.xy);
+
+	//Current fluid particle
+	FluidParticle Q = SampleFluidBuffer2D(_DivergenceBuffer, id.xy);
+
+	//Neighborhood
+	FluidParticle n = SampleFluidBuffer2D(_DivergenceBuffer, id.xy + uint2(0, 1));
+	FluidParticle e = SampleFluidBuffer2D(_DivergenceBuffer, id.xy + uint2(1, 0));
+	FluidParticle s = SampleFluidBuffer2D(_DivergenceBuffer, id.xy - uint2(0, 1));
+	FluidParticle w = SampleFluidBuffer2D(_DivergenceBuffer, id.xy - uint2(1, 0));
+
+	Q.velocity -= 0.25f * float2(e.pressure - w.pressure, n.pressure - s.pressure);
+
+	//Write result
+	_GradientBuffer[idx] = Q;
+}
+
+[numthreads(NUM_THREADS_2D, NUM_THREADS_2D, 1)]
+void Blur(uint3 id : SV_DispatchThreadID)
+{
+	uint idx = GetBufferIndexFromCoordinates2D(id.xy);
+
+	//Neighborhood
+	FluidParticle n = SampleFluidBuffer2D(_GradientBuffer, id.xy + uint2(0, 1));
+	FluidParticle e = SampleFluidBuffer2D(_GradientBuffer, id.xy + uint2(1, 0));
+	FluidParticle s = SampleFluidBuffer2D(_GradientBuffer, id.xy - uint2(0, 1));
+	FluidParticle w = SampleFluidBuffer2D(_GradientBuffer, id.xy - uint2(1, 0));
+
+	//Write result
+	_BlurBuffer[idx].velocity = 0.25f * (n.velocity + e.velocity + s.velocity + w.velocity);
+	_BlurBuffer[idx].pressure = 0.25f * (n.pressure + e.pressure + s.pressure + w.pressure);
+}
+
+[numthreads(NUM_THREADS_2D, NUM_THREADS_2D, 1)]
+void Advection(uint3 id : SV_DispatchThreadID)
+{
+	uint idx = GetBufferIndexFromCoordinates2D(id.xy);
+
+	float2 coord = float2((float)id.x, (float)id.y);
+
+	//Neighborhood
+	coord -= 0.25f * SampleFluidBuffer2DBilinear(_BlurBuffer, coord).velocity;
+	coord -= 0.25f * SampleFluidBuffer2DBilinear(_BlurBuffer, coord).velocity;
+	coord -= 0.25f * SampleFluidBuffer2DBilinear(_BlurBuffer, coord).velocity;
+	coord -= 0.25f * SampleFluidBuffer2DBilinear(_BlurBuffer, coord).velocity;
+
+	//Write result
+	_AdvectionBuffer[idx] = SampleFluidBuffer2DBilinear(_GradientBuffer, coord);
+}
+
+[numthreads(NUM_THREADS_2D, NUM_THREADS_2D, 1)]
+void WriteFluidTexture(uint3 id : SV_DispatchThreadID)
+{
+	FluidParticle Q = SampleFluidBuffer2D(_DivergenceBuffer, id.xy);
+
+	float4 output;
+
+	//normal
+	output.x = Q.velocity.x;
+	output.y = Q.velocity.y;
+	output.z = Q.pressure;
+	output.w = Q.energy;
+
+	//output.x = Q.pressure;
+	//output.y = Q.pressure;
+	//output.z = Q.pressure;
+	//output.w = Q.pressure;
+
+	//Colored
+	//output.x = abs(sin(0.3f + Q.energy + Q.velocity.x));
+	//output.y = abs(sin(0.3f + Q.energy + Q.velocity.y));
+	//output.z = abs(sin(0.3f + Q.energy + Q.pressure));
+	//output.w = abs(sin(0.3f + Q.energy + Q.energy));
+
+	_FluidTexture[id.xy] = output;
+
+	//if (Q.energy == 0) {
+	//	_FluidTexture[id.xy] = float4(0, 1, 0, 1);
+	//}
+	//else {
+	//	_FluidTexture[id.xy] = float4(1, 0, 0, 1);
+	//}
+
+}
+
