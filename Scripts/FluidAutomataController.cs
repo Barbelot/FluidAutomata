@@ -125,9 +125,6 @@ public class FluidAutomataController : MonoBehaviour
         fluidTexture.enableRandomWrite = true;
         fluidTexture.Create();
 
-        fluidMaterial.SetTexture("_BaseColorMap", fluidTexture);
-        fluidMaterial.SetTexture("_EmissiveColorMap", fluidTexture);
-
         fluidMaterial.SetTexture("_FluidTexture", fluidTexture);
     }
 
