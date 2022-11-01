@@ -10,7 +10,7 @@ The Prefabs folder contains example of setup for the Standard and HDRP pipelines
 
 ## Material setup
 
-Create a material with a texture property referenced as '_FluidTexture'. Once linked in the FluidAutomataController script, this material will receive the computed fluid texture in the _FluidTexture parameter in play mode.
+Create a material with a texture property referenced as `_FluidTexture`. Once linked in the FluidAutomataController script, this material will receive the computed fluid texture in the _FluidTexture parameter in play mode.
 
 ## Affector setup
 
