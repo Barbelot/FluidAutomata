@@ -2,6 +2,8 @@
 
 Implementation of the Shadertoy Fluid Automata from Wyatt Flanders in Unity
 
+![Fluid Automata](https://i.ibb.co/FWB8T2t/Screenshot-0.jpg)
+
 # Usage
 
 This project works in any render pipeline as all the computation are done in a compute shader.
