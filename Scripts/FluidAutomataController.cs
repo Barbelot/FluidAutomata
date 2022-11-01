@@ -21,7 +21,7 @@ namespace FluidAutomata
         [Header("Affector")]
         public GameObject affector;
         public LayerMask layerMask;
-        public float affectorRadius;
+        [Range(0, 1)] [Tooltip("The radius is in UV space")] public float affectorRadius = 0.05f;
 
         [Header("Debug")]
         public bool initialize;
